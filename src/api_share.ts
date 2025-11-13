@@ -29,24 +29,36 @@ const apiShare: FastifyPluginCallback<ApiShareOptions> = (
     async (req, reply) => {
       let shareLinkUrl = new URL(req.body.path, opts.publicHost);
       if (process.env.OSC_ACCESS_TOKEN) {
-        const response = await fetch(
-          `https://token.svc.${OSC_ENVIRONMENT}.osaas.io/delegate/eyevinn-intercom-manager`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-pat-jwt': `Bearer ${process.env.OSC_ACCESS_TOKEN}`
-            },
-            body: JSON.stringify({
-              redirectUrl: shareLinkUrl.toString()
-            })
+        try {
+          const response = await fetch(
+            `https://token.svc.${OSC_ENVIRONMENT}.osaas.io/delegate/eyevinn-intercom-manager`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-pat-jwt': `Bearer ${process.env.OSC_ACCESS_TOKEN}`
+              },
+              body: JSON.stringify({
+                redirectUrl: shareLinkUrl.toString()
+              })
+            }
+          );
+          if (response.ok) {
+            const json = (await response.json()) as { shareUrl?: string };
+            if (json.shareUrl) {
+              shareLinkUrl = new URL(json.shareUrl);
+            }
+          } else {
+            fastify.log.warn(
+              {
+                status: response.status,
+                statusText: response.statusText
+              },
+              'share delegate request failed'
+            );
           }
-        );
-        if (response.ok) {
-          const json = (await response.json()) as { shareUrl?: string };
-          if (json.shareUrl) {
-            shareLinkUrl = new URL(json.shareUrl);
-          }
+        } catch (error) {
+          fastify.log.warn({ err: error }, 'share delegate request error');
         }
       }
       reply.send({ url: shareLinkUrl.toString() });
