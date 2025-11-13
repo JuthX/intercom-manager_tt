@@ -38,7 +38,30 @@ const mockDbManager = {
   getSession: jest.fn().mockResolvedValue(null),
   deleteUserSession: jest.fn().mockResolvedValue(true),
   updateSession: jest.fn().mockResolvedValue(true),
-  getSessionsByQuery: jest.fn().mockResolvedValue([])
+  getSessionsByQuery: jest.fn().mockResolvedValue([]),
+  upsertRole: jest.fn().mockResolvedValue({}),
+  getRoleByScope: jest.fn().mockResolvedValue(undefined),
+  listRoles: jest.fn().mockResolvedValue([]),
+  createOrganization: jest.fn().mockResolvedValue({}),
+  getOrganization: jest.fn().mockResolvedValue(null),
+  listOrganizations: jest.fn().mockResolvedValue([]),
+  upsertUser: jest.fn().mockResolvedValue({}),
+  getUser: jest.fn().mockResolvedValue(null),
+  listUsersByOrganization: jest.fn().mockResolvedValue([]),
+  savePanelLayout: jest.fn().mockResolvedValue({}),
+  listPanelLayouts: jest.fn().mockResolvedValue([]),
+  getPanelLayout: jest.fn().mockResolvedValue(null),
+  deletePanelLayout: jest.fn().mockResolvedValue(true),
+  saveChannelPreset: jest.fn().mockResolvedValue({}),
+  listChannelPresets: jest.fn().mockResolvedValue([]),
+  getChannelPreset: jest.fn().mockResolvedValue(null),
+  deleteChannelPreset: jest.fn().mockResolvedValue(true),
+  saveDevice: jest.fn().mockResolvedValue({}),
+  getDevice: jest.fn().mockResolvedValue(null),
+  listDevicesByOrganization: jest.fn().mockResolvedValue([]),
+  saveAutomationHook: jest.fn().mockResolvedValue({}),
+  listAutomationHooks: jest.fn().mockResolvedValue([]),
+  deleteAutomationHook: jest.fn().mockResolvedValue(true)
 };
 
 const mockProductionManager = {
@@ -86,7 +109,8 @@ describe('api', () => {
       coreFunctions: new CoreFunctions(
         mockProductionManager,
         new ConnectionQueue()
-      )
+      ),
+      auth: { allowAnonymous: true, defaultScopes: ['admin'] }
     });
     const response = await server.inject({
       method: 'GET',

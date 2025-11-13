@@ -51,7 +51,30 @@ const mockDbManager = {
   getSession: jest.fn().mockResolvedValue(null),
   deleteUserSession: jest.fn().mockResolvedValue(true),
   updateSession: jest.fn().mockResolvedValue(true),
-  getSessionsByQuery: jest.fn().mockResolvedValue([])
+  getSessionsByQuery: jest.fn().mockResolvedValue([]),
+  upsertRole: jest.fn().mockResolvedValue({}),
+  getRoleByScope: jest.fn().mockResolvedValue(undefined),
+  listRoles: jest.fn().mockResolvedValue([]),
+  createOrganization: jest.fn().mockResolvedValue({}),
+  getOrganization: jest.fn().mockResolvedValue(null),
+  listOrganizations: jest.fn().mockResolvedValue([]),
+  upsertUser: jest.fn().mockResolvedValue({}),
+  getUser: jest.fn().mockResolvedValue(null),
+  listUsersByOrganization: jest.fn().mockResolvedValue([]),
+  savePanelLayout: jest.fn().mockResolvedValue({}),
+  listPanelLayouts: jest.fn().mockResolvedValue([]),
+  getPanelLayout: jest.fn().mockResolvedValue(null),
+  deletePanelLayout: jest.fn().mockResolvedValue(true),
+  saveChannelPreset: jest.fn().mockResolvedValue({}),
+  listChannelPresets: jest.fn().mockResolvedValue([]),
+  getChannelPreset: jest.fn().mockResolvedValue(null),
+  deleteChannelPreset: jest.fn().mockResolvedValue(true),
+  saveDevice: jest.fn().mockResolvedValue({}),
+  getDevice: jest.fn().mockResolvedValue(null),
+  listDevicesByOrganization: jest.fn().mockResolvedValue([]),
+  saveAutomationHook: jest.fn().mockResolvedValue({}),
+  listAutomationHooks: jest.fn().mockResolvedValue([]),
+  deleteAutomationHook: jest.fn().mockResolvedValue(true)
 };
 
 const mockIngestManager = {
@@ -172,7 +195,22 @@ const mockProductionManager = {
     .fn()
     .mockImplementation((sessionId: string) => sessionId),
   createUserSession: jest.fn().mockResolvedValue(undefined),
-  getActiveUsers: jest.fn().mockResolvedValue([])
+  getActiveUsers: jest.fn().mockResolvedValue([]),
+  getChannelPresets: jest.fn().mockResolvedValue([]),
+  saveChannelPreset: jest.fn().mockResolvedValue({ _id: 'preset', productionId: 1 } as any),
+  deleteChannelPreset: jest.fn().mockResolvedValue(true),
+  applyChannelPreset: jest.fn().mockResolvedValue({ _id: 'preset', productionId: 1 } as any),
+  listPanelLayouts: jest.fn().mockResolvedValue([]),
+  savePanelLayout: jest.fn().mockResolvedValue({ _id: 'layout', productionId: 1 } as any),
+  deletePanelLayout: jest.fn().mockResolvedValue(true),
+  exportConfiguration: jest.fn().mockResolvedValue('{}'),
+  importConfiguration: jest
+    .fn()
+    .mockResolvedValue({ productionId: 1, channelPresets: [], panelLayouts: [] }),
+  listAutomationHooks: jest.fn().mockResolvedValue([]),
+  registerAutomationHook: jest.fn().mockResolvedValue({ _id: 'hook' } as any),
+  deleteAutomationHook: jest.fn().mockResolvedValue(true),
+  handleAutomationEvent: jest.fn().mockResolvedValue(undefined)
 } as any;
 
 describe('Production API', () => {
@@ -199,7 +237,8 @@ describe('Production API', () => {
       dbManager: mockDbManager,
       productionManager: mockProductionManager,
       ingestManager: mockIngestManager,
-      coreFunctions: mockCoreFunctions
+      coreFunctions: mockCoreFunctions,
+      auth: { allowAnonymous: true, defaultScopes: ['admin'] }
     });
   });
 
@@ -454,6 +493,91 @@ describe('Production API', () => {
         url: '/api/v1/production/1'
       });
       expect(response.statusCode).toBe(500);
+    });
+  });
+
+  describe('Channel preset endpoints', () => {
+    test('can create a channel preset', async () => {
+      mockProductionManager.saveChannelPreset.mockResolvedValueOnce({
+        _id: 'preset-1',
+        productionId: 1,
+        version: 1,
+        nodes: [],
+        edges: [],
+        priorityRules: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/production/1/channel-presets',
+        payload: { name: 'Morning Show' }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockProductionManager.saveChannelPreset).toHaveBeenCalled();
+    });
+
+    test('can apply a channel preset with endpoint allocation', async () => {
+      mockProductionManager.applyChannelPreset.mockResolvedValueOnce({
+        _id: 'preset-1',
+        productionId: 1,
+        version: 2
+      } as any);
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/production/1/channel-presets/p1/apply',
+        payload: { allocateEndpoints: true }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockProductionManager.applyChannelPreset).toHaveBeenCalled();
+    });
+  });
+
+  describe('Panel configuration import/export', () => {
+    test('exports configuration as YAML', async () => {
+      mockProductionManager.exportConfiguration.mockResolvedValueOnce('foo: bar');
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/production/1/config/export?format=yaml'
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('foo');
+    });
+
+    test('imports configuration payload', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/production/1/config/import',
+        payload: { payload: JSON.stringify({ productionId: 1, channelPresets: [], panelLayouts: [] }) }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockProductionManager.importConfiguration).toHaveBeenCalled();
+    });
+  });
+
+  describe('Automation hooks', () => {
+    test('can register an automation hook', async () => {
+      mockProductionManager.registerAutomationHook.mockResolvedValueOnce({
+        _id: 'hook',
+        productionId: 1
+      } as any);
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/production/1/automation/hooks',
+        payload: { type: 'webhook', event: 'tally', target: 'https://example.com', organizationId: 'org', productionId: 1 }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockProductionManager.registerAutomationHook).toHaveBeenCalled();
+    });
+
+    test('can dispatch an automation event', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/production/1/automation/events',
+        payload: { type: 'gpio', payload: { pin: 1 } }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mockProductionManager.handleAutomationEvent).toHaveBeenCalled();
     });
   });
 

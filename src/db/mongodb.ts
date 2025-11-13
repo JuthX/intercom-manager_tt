@@ -1,6 +1,20 @@
 import '../config/load-env';
+import { randomUUID } from 'crypto';
 import { MongoClient } from 'mongodb';
-import { Ingest, Line, NewIngest, Production, UserSession } from '../models';
+import {
+  AutomationHook,
+  ChannelPreset,
+  Device,
+  Ingest,
+  Line,
+  NewIngest,
+  Organization,
+  PanelLayout,
+  Production,
+  Role,
+  User,
+  UserSession
+} from '../models';
 import { assert } from '../utils';
 import { DbManager } from './interface';
 import { Log } from '../log';
@@ -9,6 +23,27 @@ const SESSION_PRUNE_SECONDS = 7_200;
 
 export class DbManagerMongoDb implements DbManager {
   private client: MongoClient;
+  private slugify(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/-{2,}/g, '-');
+  }
+
+  private nowIso(): string {
+    return new Date().toISOString();
+  }
+
+  private withTimestamps<T extends { createdAt: string; updatedAt: string }>(
+    doc: Partial<T>
+  ): { createdAt: string; updatedAt: string } {
+    const now = this.nowIso();
+    return {
+      createdAt: (doc.createdAt as string) ?? now,
+      updatedAt: now
+    };
+  }
 
   constructor(dbConnectionUrl: URL) {
     this.client = new MongoClient(dbConnectionUrl.toString());
@@ -76,6 +111,30 @@ export class DbManagerMongoDb implements DbManager {
     await safeCreate({ productionId: 1 });
     await safeCreate({ endpointId: 1 });
     await safeCreate({ productionId: 1, endpointId: 1 });
+
+    const ensureCollectionIndex = async (
+      collectionName: string,
+      keys: Record<string, 1 | -1>,
+      opts: any = {}
+    ) => {
+      const collection = db.collection(collectionName);
+      try {
+        await collection.createIndex(keys, opts);
+      } catch (err: any) {
+        const msg = String(err?.message || '');
+        if (!/already exists/i.test(msg)) throw err;
+      }
+    };
+
+    await ensureCollectionIndex('organizations', { slug: 1 }, { unique: true });
+    await ensureCollectionIndex('roles', { scope: 1 }, { unique: true });
+    await ensureCollectionIndex('users', { organizationId: 1, email: 1 }, { unique: true });
+    await ensureCollectionIndex('panelLayouts', { productionId: 1, version: -1 });
+    await ensureCollectionIndex('panelLayouts', { organizationId: 1 });
+    await ensureCollectionIndex('channelPresets', { productionId: 1, version: -1 });
+    await ensureCollectionIndex('devices', { organizationId: 1 });
+    await ensureCollectionIndex('devices', { userId: 1 });
+    await ensureCollectionIndex('automationHooks', { productionId: 1, event: 1 });
   }
 
   async disconnect(): Promise<void> {
@@ -288,5 +347,213 @@ export class DbManagerMongoDb implements DbManager {
     delete (mongoQuery as any).lastSeen;
 
     return sessions.find(mongoQuery).toArray();
+  }
+
+  async upsertRole(role: Role): Promise<Role> {
+    const db = this.client.db();
+    const collection = db.collection<Role>('roles');
+    const timestamps = this.withTimestamps<Role>(role);
+    const doc: Role = {
+      ...role,
+      _id: role._id || randomUUID(),
+      ...timestamps
+    } as Role;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async getRoleByScope(scope: string): Promise<Role | undefined> {
+    const db = this.client.db();
+    const result = await db.collection<Role>('roles').findOne({ scope });
+    return result ?? undefined;
+  }
+
+  async listRoles(): Promise<Role[]> {
+    const db = this.client.db();
+    return db.collection<Role>('roles').find().sort({ name: 1 }).toArray();
+  }
+
+  async createOrganization(org: Organization): Promise<Organization> {
+    const db = this.client.db();
+    const collection = db.collection<Organization>('organizations');
+    const timestamps = this.withTimestamps<Organization>(org);
+    const slug = this.slugify(org.slug || org.name);
+    const doc: Organization = {
+      ...org,
+      _id: org._id || randomUUID(),
+      slug,
+      ...timestamps
+    } as Organization;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async getOrganization(id: string): Promise<Organization | null> {
+    const db = this.client.db();
+    return db.collection<Organization>('organizations').findOne({ _id: id });
+  }
+
+  async listOrganizations(): Promise<Organization[]> {
+    const db = this.client.db();
+    return db
+      .collection<Organization>('organizations')
+      .find()
+      .sort({ name: 1 })
+      .toArray();
+  }
+
+  async upsertUser(user: User): Promise<User> {
+    const db = this.client.db();
+    const collection = db.collection<User>('users');
+    const timestamps = this.withTimestamps<User>(user);
+    const doc: User = {
+      ...user,
+      _id: user._id || randomUUID(),
+      devices: user.devices ?? [],
+      roleIds: user.roleIds ?? [],
+      ...timestamps
+    } as User;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    const db = this.client.db();
+    return db.collection<User>('users').findOne({ _id: id });
+  }
+
+  async listUsersByOrganization(organizationId: string): Promise<User[]> {
+    const db = this.client.db();
+    return db
+      .collection<User>('users')
+      .find({ organizationId })
+      .sort({ displayName: 1 })
+      .toArray();
+  }
+
+  async savePanelLayout(layout: PanelLayout): Promise<PanelLayout> {
+    const db = this.client.db();
+    const collection = db.collection<PanelLayout>('panelLayouts');
+    const timestamps = this.withTimestamps<PanelLayout>(layout);
+    const doc: PanelLayout = {
+      ...layout,
+      _id: layout._id || randomUUID(),
+      version: layout.version ?? 1,
+      panels: layout.panels ?? [],
+      ...timestamps
+    } as PanelLayout;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async listPanelLayouts(productionId: number): Promise<PanelLayout[]> {
+    const db = this.client.db();
+    return db
+      .collection<PanelLayout>('panelLayouts')
+      .find({ productionId })
+      .sort({ version: -1 })
+      .toArray();
+  }
+
+  async getPanelLayout(id: string): Promise<PanelLayout | null> {
+    const db = this.client.db();
+    return db.collection<PanelLayout>('panelLayouts').findOne({ _id: id });
+  }
+
+  async deletePanelLayout(id: string): Promise<boolean> {
+    const db = this.client.db();
+    const result = await db.collection('panelLayouts').deleteOne({ _id: id });
+    return result.deletedCount === 1;
+  }
+
+  async saveChannelPreset(preset: ChannelPreset): Promise<ChannelPreset> {
+    const db = this.client.db();
+    const collection = db.collection<ChannelPreset>('channelPresets');
+    const timestamps = this.withTimestamps<ChannelPreset>(preset);
+    const doc: ChannelPreset = {
+      ...preset,
+      _id: preset._id || randomUUID(),
+      version: preset.version ?? 1,
+      nodes: preset.nodes ?? [],
+      edges: preset.edges ?? [],
+      priorityRules: preset.priorityRules ?? [],
+      ...timestamps
+    } as ChannelPreset;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async listChannelPresets(productionId: number): Promise<ChannelPreset[]> {
+    const db = this.client.db();
+    return db
+      .collection<ChannelPreset>('channelPresets')
+      .find({ productionId })
+      .sort({ version: -1 })
+      .toArray();
+  }
+
+  async getChannelPreset(id: string): Promise<ChannelPreset | null> {
+    const db = this.client.db();
+    return db.collection<ChannelPreset>('channelPresets').findOne({ _id: id });
+  }
+
+  async deleteChannelPreset(id: string): Promise<boolean> {
+    const db = this.client.db();
+    const result = await db.collection('channelPresets').deleteOne({ _id: id });
+    return result.deletedCount === 1;
+  }
+
+  async saveDevice(device: Device): Promise<Device> {
+    const db = this.client.db();
+    const collection = db.collection<Device>('devices');
+    const timestamps = this.withTimestamps<Device>(device);
+    const doc: Device = {
+      ...device,
+      _id: device._id || randomUUID(),
+      ...timestamps
+    } as Device;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async getDevice(id: string): Promise<Device | null> {
+    const db = this.client.db();
+    return db.collection<Device>('devices').findOne({ _id: id });
+  }
+
+  async listDevicesByOrganization(organizationId: string): Promise<Device[]> {
+    const db = this.client.db();
+    return db
+      .collection<Device>('devices')
+      .find({ organizationId })
+      .sort({ label: 1 })
+      .toArray();
+  }
+
+  async saveAutomationHook(hook: AutomationHook): Promise<AutomationHook> {
+    const db = this.client.db();
+    const collection = db.collection<AutomationHook>('automationHooks');
+    const timestamps = this.withTimestamps<AutomationHook>(hook);
+    const doc: AutomationHook = {
+      ...hook,
+      _id: hook._id || randomUUID(),
+      ...timestamps
+    } as AutomationHook;
+    await collection.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    return doc;
+  }
+
+  async listAutomationHooks(productionId: number): Promise<AutomationHook[]> {
+    const db = this.client.db();
+    return db
+      .collection<AutomationHook>('automationHooks')
+      .find({ productionId })
+      .toArray();
+  }
+
+  async deleteAutomationHook(id: string): Promise<boolean> {
+    const db = this.client.db();
+    const result = await db.collection('automationHooks').deleteOne({ _id: id });
+    return result.deletedCount === 1;
   }
 }

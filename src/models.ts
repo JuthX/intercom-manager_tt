@@ -1,5 +1,161 @@
 import { Static, Type } from '@sinclair/typebox';
 
+export const RoleScopeEnum = Type.Union([
+  Type.Literal('admin'),
+  Type.Literal('engineer'),
+  Type.Literal('operator'),
+  Type.Literal('talent')
+]);
+
+export const RoleDocument = Type.Object({
+  _id: Type.String(),
+  name: Type.String(),
+  scope: RoleScopeEnum,
+  description: Type.Optional(Type.String()),
+  permissions: Type.Array(Type.String()),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' })
+});
+
+export const OrganizationDocument = Type.Object({
+  _id: Type.String(),
+  name: Type.String(),
+  slug: Type.String(),
+  domains: Type.Array(Type.String()),
+  defaultRoleIds: Type.Array(Type.String()),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' })
+});
+
+export const UserDocument = Type.Object({
+  _id: Type.String(),
+  organizationId: Type.String(),
+  email: Type.String(),
+  displayName: Type.String(),
+  roleIds: Type.Array(Type.String()),
+  devices: Type.Array(Type.String()),
+  externalIds: Type.Optional(Type.Record(Type.String(), Type.String())),
+  status: Type.Optional(Type.String()),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' })
+});
+
+export const PanelTile = Type.Object({
+  id: Type.String(),
+  label: Type.String(),
+  channels: Type.Array(Type.String()),
+  deviceType: Type.Optional(Type.String()),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Any()))
+});
+
+export const PanelLayoutDocument = Type.Object({
+  _id: Type.String(),
+  organizationId: Type.String(),
+  productionId: Type.Optional(Type.Number()),
+  name: Type.String(),
+  description: Type.Optional(Type.String()),
+  presetId: Type.Optional(Type.String()),
+  panels: Type.Array(PanelTile),
+  version: Type.Number(),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' })
+});
+
+export const ChannelGraphNode = Type.Object({
+  id: Type.String(),
+  type: Type.Union([
+    Type.Literal('source'),
+    Type.Literal('ifb'),
+    Type.Literal('mix-minus'),
+    Type.Literal('talent'),
+    Type.Literal('bus')
+  ]),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Any()))
+});
+
+export const ChannelGraphEdge = Type.Object({
+  from: Type.String(),
+  to: Type.String(),
+  priority: Type.Optional(Type.Number()),
+  interrupt: Type.Optional(Type.Boolean())
+});
+
+export const ChannelPriorityRule = Type.Object({
+  id: Type.String(),
+  targetNodeId: Type.String(),
+  priority: Type.Number(),
+  mode: Type.Union([Type.Literal('duck'), Type.Literal('gate')])
+});
+
+export const ChannelPresetDocument = Type.Object({
+  _id: Type.String(),
+  productionId: Type.Number(),
+  organizationId: Type.Optional(Type.String()),
+  name: Type.String(),
+  description: Type.Optional(Type.String()),
+  version: Type.Number(),
+  nodes: Type.Array(ChannelGraphNode),
+  edges: Type.Array(ChannelGraphEdge),
+  priorityRules: Type.Array(ChannelPriorityRule),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Any())),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' }),
+  history: Type.Optional(
+    Type.Array(
+      Type.Object({
+        version: Type.Number(),
+        appliedAt: Type.String({ format: 'date-time' })
+      })
+    )
+  )
+});
+
+export const DeviceDocument = Type.Object({
+  _id: Type.String(),
+  userId: Type.String(),
+  organizationId: Type.String(),
+  label: Type.String(),
+  type: Type.String(),
+  status: Type.Union([
+    Type.Literal('online'),
+    Type.Literal('offline'),
+    Type.Literal('provisioning')
+  ]),
+  channelPresetId: Type.Optional(Type.String()),
+  lastSeen: Type.Optional(Type.String({ format: 'date-time' })),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Any()))
+});
+
+export const AutomationHookDocument = Type.Object({
+  _id: Type.String(),
+  organizationId: Type.String(),
+  productionId: Type.Number(),
+  event: Type.String(),
+  type: Type.Union([Type.Literal('webhook'), Type.Literal('script')]),
+  target: Type.Optional(Type.String()),
+  headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+  scriptPath: Type.Optional(Type.String()),
+  timeoutMs: Type.Optional(Type.Number()),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' })
+});
+
+export const PanelConfigurationExport = Type.Object({
+  productionId: Type.Number(),
+  channelPresets: Type.Array(ChannelPresetDocument),
+  panelLayouts: Type.Array(PanelLayoutDocument)
+});
+
+export type RoleScope = Static<typeof RoleScopeEnum>;
+export type Role = Static<typeof RoleDocument>;
+export type Organization = Static<typeof OrganizationDocument>;
+export type User = Static<typeof UserDocument>;
+export type PanelLayout = Static<typeof PanelLayoutDocument>;
+export type ChannelPreset = Static<typeof ChannelPresetDocument>;
+export type Device = Static<typeof DeviceDocument>;
+export type AutomationHook = Static<typeof AutomationHookDocument>;
+export type PanelConfigurationSnapshot = Static<typeof PanelConfigurationExport>;
+
 export type NewProduction = Static<typeof NewProduction>;
 export type NewProductionLine = Static<typeof NewProductionLine>;
 export type Production = Static<typeof Production>;

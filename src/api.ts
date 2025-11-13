@@ -12,6 +12,7 @@ import apiReAuth from './api_re_auth';
 import apiShare from './api_share';
 import apiWhip, { ApiWhipOptions } from './api_whip';
 import apiWhep, { ApiWhepOptions } from './api_whep';
+import { registerAuth, AuthModuleOptions } from './auth';
 import { DbManager } from './db/interface';
 import { IngestManager } from './ingest_manager';
 import { ProductionManager } from './production_manager';
@@ -55,6 +56,7 @@ export interface ApiGeneralOptions {
   dbManager: DbManager;
   productionManager: ProductionManager;
   ingestManager: IngestManager;
+  auth?: AuthModuleOptions;
 }
 
 export type ApiOptions = ApiGeneralOptions &
@@ -93,6 +95,11 @@ export default async (opts: ApiOptions) => {
   });
   api.register(swaggerUI, {
     routePrefix: '/api/docs'
+  });
+
+  await registerAuth(api, {
+    dbManager: opts.dbManager,
+    ...(opts.auth || {})
   });
 
   api.register(healthcheck, { title: opts.title });
