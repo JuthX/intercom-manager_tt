@@ -1,11 +1,14 @@
-import { Type } from '@sinclair/typebox';
+import { Static, Type } from '@sinclair/typebox';
 import dotenv from 'dotenv';
 import { FastifyPluginCallback } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
+import { requireScopes } from './auth';
 import { CoreFunctions } from './api_productions_core_functions';
 import { DbManager } from './db/interface';
 import { Log } from './log';
 import {
+  AutomationHookDocument,
+  ChannelPresetDocument,
   DetailedProductionResponse,
   ErrorResponse,
   LineResponse,
@@ -21,7 +24,8 @@ import {
   SdpAnswer,
   SessionResponse,
   SmbEndpointDescription,
-  UserResponse
+  UserResponse,
+  PanelLayoutDocument
 } from './models';
 import { ProductionManager } from './production_manager';
 import { SmbProtocol } from './smb';
@@ -79,6 +83,26 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
   const coreFunctions = opts.coreFunctions;
   const dbManager = opts.dbManager;
 
+  const ChannelPresetPayload = Type.Partial(ChannelPresetDocument);
+  const PanelLayoutPayload = Type.Partial(PanelLayoutDocument);
+  const AutomationHookPayload = Type.Partial(AutomationHookDocument);
+  const ConfigImportBody = Type.Object({
+    payload: Type.String(),
+    format: Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('yaml')]))
+  });
+  const AutomationEventBody = Type.Object({
+    type: Type.String(),
+    payload: Type.Record(Type.String(), Type.Any())
+  });
+
+  const requireEngineer = requireScopes(['admin', 'engineer']);
+  const requireOperator = requireScopes(['admin', 'engineer', 'operator']);
+  type ChannelPresetBody = Static<typeof ChannelPresetPayload>;
+  type PanelLayoutBody = Static<typeof PanelLayoutPayload>;
+  type AutomationHookBodyType = Static<typeof AutomationHookPayload>;
+  type ConfigImportRequest = Static<typeof ConfigImportBody>;
+  type AutomationEventRequest = Static<typeof AutomationEventBody>;
+
   setInterval(
     () => productionManager.checkUserStatus(smb, smbServerUrl, smbServerApiKey),
     2_000
@@ -97,7 +121,8 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           200: ProductionResponse,
           400: ErrorResponse
         }
-      }
+      },
+      preHandler: requireEngineer
     },
     async (request, reply) => {
       try {
@@ -297,7 +322,8 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           404: ErrorResponse,
           500: Type.String()
         }
-      }
+      },
+      preHandler: requireEngineer
     },
     async (request, reply) => {
       try {
@@ -408,7 +434,8 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           400: ErrorResponse,
           500: Type.String()
         }
-      }
+      },
+      preHandler: requireEngineer
     },
     async (request, reply) => {
       try {
@@ -512,7 +539,8 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           404: ErrorResponse,
           500: Type.String()
         }
-      }
+      },
+      preHandler: requireEngineer
     },
     async (request, reply) => {
       try {
@@ -580,7 +608,8 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           404: ErrorResponse,
           500: Type.String()
         }
-      }
+      },
+      preHandler: requireEngineer
     },
     async (request, reply) => {
       try {
@@ -949,9 +978,230 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
     }
   );
 
+  fastify.get<{ Params: { id: string } }>(
+    '/production/:id/channel-presets',
+    {
+      schema: {
+        response: { 200: Type.Array(ChannelPresetDocument) }
+      },
+      preHandler: requireOperator
+    },
+    async (request, reply) => {
+      const productionId = Number(request.params.id);
+      const presets = await productionManager.getChannelPresets(productionId);
+      reply.send(presets);
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: ChannelPresetBody }>(
+    '/production/:id/channel-presets',
+    {
+      schema: { body: ChannelPresetPayload },
+      preHandler: requireEngineer
+    },
+    async (request, reply) => {
+      const productionId = Number(request.params.id);
+      const preset = await productionManager.saveChannelPreset(
+        productionId,
+        request.body
+      );
+      reply.send(preset);
+    }
+  );
+
+  fastify.patch<{
+    Params: { id: string; presetId: string };
+    Body: ChannelPresetBody;
+  }>(
+    '/production/:id/channel-presets/:presetId',
+    {
+      schema: { body: ChannelPresetPayload },
+      preHandler: requireEngineer
+    },
+    async (request, reply) => {
+      const productionId = Number(request.params.id);
+      const preset = await productionManager.saveChannelPreset(
+        productionId,
+        Object.assign({}, request.body, { _id: request.params.presetId })
+      );
+      reply.send(preset);
+    }
+  );
+
+  fastify.delete<{ Params: { id: string; presetId: string } }>(
+    '/production/:id/channel-presets/:presetId',
+    { preHandler: requireEngineer },
+    async (request, reply) => {
+      const productionId = Number(request.params.id);
+      const deleted = await productionManager.deleteChannelPreset(
+        productionId,
+        request.params.presetId
+      );
+      reply.send({ deleted });
+    }
+  );
+
+  fastify.post<{ Params: { id: string; presetId: string }; Body: { allocateEndpoints?: boolean } }>(
+    '/production/:id/channel-presets/:presetId/apply',
+    { preHandler: requireOperator },
+    async (request, reply) => {
+      const productionId = Number(request.params.id);
+      const production = await productionManager.requireProduction(
+        productionId
+      );
+      const lineConferenceMap: Record<string, string> = {};
+      production.lines.forEach((line) => {
+        if (line.id && line.smbConferenceId) {
+          lineConferenceMap[line.id] = line.smbConferenceId;
+        }
+      });
+      const preset = await productionManager.applyChannelPreset(
+        productionId,
+        request.params.presetId,
+        {
+          allocateEndpoints: request.body?.allocateEndpoints,
+          smb,
+          smbServerUrl,
+          smbServerApiKey,
+          endpointIdleTimeout: Number(opts.endpointIdleTimeout),
+          lineConferenceMap
+        }
+      );
+      reply.send(preset);
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    '/production/:id/panel-layouts',
+    {
+      schema: { response: { 200: Type.Array(PanelLayoutDocument) } },
+      preHandler: requireOperator
+    },
+    async (request, reply) => {
+      const layouts = await productionManager.listPanelLayouts(
+        Number(request.params.id)
+      );
+      reply.send(layouts);
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: PanelLayoutBody }>(
+    '/production/:id/panel-layouts',
+    { schema: { body: PanelLayoutPayload }, preHandler: requireEngineer },
+    async (request, reply) => {
+      const layout = await productionManager.savePanelLayout(
+        Number(request.params.id),
+        request.body
+      );
+      reply.send(layout);
+    }
+  );
+
+  fastify.delete<{ Params: { id: string; layoutId: string } }>(
+    '/production/:id/panel-layouts/:layoutId',
+    { preHandler: requireEngineer },
+    async (request, reply) => {
+      const deleted = await productionManager.deletePanelLayout(
+        request.params.layoutId
+      );
+      reply.send({ deleted });
+    }
+  );
+
+  fastify.get<{ Params: { id: string }; Querystring: { format?: 'json' | 'yaml' } }>(
+    '/production/:id/config/export',
+    { preHandler: requireEngineer },
+    async (request, reply) => {
+      const format = request.query.format === 'yaml' ? 'yaml' : 'json';
+      const payload = await productionManager.exportConfiguration(
+        Number(request.params.id),
+        format
+      );
+      reply.header(
+        'Content-Type',
+        format === 'yaml' ? 'application/x-yaml' : 'application/json'
+      );
+      reply.send(payload);
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: ConfigImportRequest }>(
+    '/production/:id/config/import',
+    { schema: { body: ConfigImportBody }, preHandler: requireEngineer },
+    async (request, reply) => {
+      const snapshot = await productionManager.importConfiguration(
+        Number(request.params.id),
+        request.body.payload
+      );
+      reply.send(snapshot);
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    '/production/:id/automation/hooks',
+    {
+      schema: { response: { 200: Type.Array(AutomationHookDocument) } },
+      preHandler: requireEngineer
+    },
+    async (request, reply) => {
+      const hooks = await productionManager.listAutomationHooks(
+        Number(request.params.id)
+      );
+      reply.send(hooks);
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: AutomationHookBodyType }>(
+    '/production/:id/automation/hooks',
+    { schema: { body: AutomationHookPayload }, preHandler: requireEngineer },
+    async (request, reply) => {
+      const now = new Date().toISOString();
+      const hookPayload = Object.assign(
+        {
+          _id: (request.body as any)?._id || uuidv4(),
+          createdAt: now,
+          updatedAt: now,
+          organizationId: request.body.organizationId || 'org-default',
+          type: request.body.type || 'webhook',
+          event: request.body.event || 'custom'
+        },
+        request.body,
+        {
+          productionId: Number(request.params.id)
+        }
+      );
+      const hook = await productionManager.registerAutomationHook(hookPayload);
+      reply.send(hook);
+    }
+  );
+
+  fastify.delete<{ Params: { id: string; hookId: string } }>(
+    '/production/:id/automation/hooks/:hookId',
+    { preHandler: requireEngineer },
+    async (request, reply) => {
+      const deleted = await productionManager.deleteAutomationHook(
+        request.params.hookId,
+        Number(request.params.id)
+      );
+      reply.send({ deleted });
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: AutomationEventRequest }>(
+    '/production/:id/automation/events',
+    { schema: { body: AutomationEventBody }, preHandler: requireOperator },
+    async (request, reply) => {
+      await productionManager.handleAutomationEvent(
+        Number(request.params.id),
+        request.body
+      );
+      reply.send({ ok: true });
+    }
+  );
   next();
 };
 
 export function getApiProductions() {
   return apiProductions;
 }
+

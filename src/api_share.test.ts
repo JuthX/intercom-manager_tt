@@ -1,6 +1,7 @@
 import api from './api';
 import { CoreFunctions } from './api_productions_core_functions';
 import { ConnectionQueue } from './connection_queue';
+import { DbManager } from './db/interface';
 import { UserSession } from './models';
 
 jest.mock('./db/interface', () => ({
@@ -40,7 +41,7 @@ const mockDbManager = {
   deleteUserSession: jest.fn().mockResolvedValue(true),
   updateSession: jest.fn().mockResolvedValue(true),
   getSessionsByQuery: jest.fn().mockResolvedValue([])
-};
+} as unknown as DbManager;
 
 const mockProductionManager = {
   checkUserStatus: jest.fn()
@@ -64,7 +65,8 @@ describe('share api', () => {
       coreFunctions: new CoreFunctions(
         mockProductionManager,
         new ConnectionQueue()
-      )
+      ),
+      auth: { allowAnonymous: true, defaultScopes: ['admin'] }
     });
     const response = await server.inject({
       method: 'POST',

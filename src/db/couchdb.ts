@@ -1,5 +1,19 @@
+import { randomUUID } from 'crypto';
 import { Log } from '../log';
-import { Ingest, Line, NewIngest, Production, UserSession } from '../models';
+import {
+  AutomationHook,
+  ChannelPreset,
+  Device,
+  Ingest,
+  Line,
+  NewIngest,
+  Organization,
+  PanelLayout,
+  Production,
+  Role,
+  User,
+  UserSession
+} from '../models';
 import { assert } from '../utils';
 import { DbManager } from './interface';
 import nano from 'nano';
@@ -8,6 +22,77 @@ export class DbManagerCouchDb implements DbManager {
   private client;
   private nanoDb: nano.DocumentScope<unknown> | undefined;
   private dbConnectionUrl: URL;
+  private slugify(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/-{2,}/g, '-');
+  }
+
+  private nowIso(): string {
+    return new Date().toISOString();
+  }
+
+  private async upsertDoc<T>(doc: Record<string, unknown>): Promise<T> {
+    await this.connect();
+    if (!this.nanoDb) {
+      throw new Error('Database not connected');
+    }
+    let existing;
+    try {
+      existing = await this.nanoDb.get(doc._id as string);
+    } catch (error: any) {
+      if (error?.statusCode !== 404) {
+        throw error;
+      }
+    }
+    const payload = existing ? { ...existing, ...doc } : doc;
+    const response = await this.nanoDb.insert(payload as nano.MaybeDocument);
+    if (!response.ok) {
+      throw new Error('Failed to persist document');
+    }
+    return payload as T;
+  }
+
+  private async deleteDoc(id: string): Promise<boolean> {
+    await this.connect();
+    if (!this.nanoDb) {
+      throw new Error('Database not connected');
+    }
+    try {
+      const existing = await this.nanoDb.get(id);
+      const response = await this.nanoDb.destroy(existing._id, existing._rev);
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private async findDocs<T>(selector: Record<string, unknown>): Promise<T[]> {
+    await this.connect();
+    if (!this.nanoDb) {
+      throw new Error('Database not connected');
+    }
+    const response = await this.nanoDb.find({ selector });
+    return response.docs as unknown as T[];
+  }
+
+  private async getDoc<T>(id: string): Promise<T | null> {
+    await this.connect();
+    if (!this.nanoDb) {
+      throw new Error('Database not connected');
+    }
+    try {
+      const doc = await this.nanoDb.get(id);
+      return doc as any as T;
+    } catch (error: any) {
+      if (error?.statusCode === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
 
   constructor(dbConnectionUrl: URL) {
     this.dbConnectionUrl = dbConnectionUrl;
@@ -28,6 +113,25 @@ export class DbManagerCouchDb implements DbManager {
       this.nanoDb = this.client.db.use(
         this.dbConnectionUrl.pathname.replace(/^\//, '')
       );
+
+      const ensureIndex = async (fields: string[], name: string) => {
+        if (!this.nanoDb) return;
+        try {
+          await this.nanoDb.createIndex({
+            index: { fields },
+            name,
+            type: 'json'
+          });
+        } catch (err: any) {
+          if (err?.statusCode !== 409) {
+            Log().warn('Failed to create index %s: %s', name, err?.message || err);
+          }
+        }
+      };
+
+      await ensureIndex(['docType'], 'doctype-index');
+      await ensureIndex(['docType', 'organizationId'], 'doctype-org-index');
+      await ensureIndex(['docType', 'productionId'], 'doctype-prod-index');
     }
   }
 
@@ -400,5 +504,162 @@ export class DbManagerCouchDb implements DbManager {
     delete selector.lastSeen;
     const response = await this.nanoDb.find({ selector });
     return response.docs as unknown as UserSession[]; // could also expand type UserSession to avoid unknown
+  }
+
+  async upsertRole(role: Role): Promise<Role> {
+    const now = this.nowIso();
+    const payload = {
+      ...role,
+      _id: role._id || randomUUID(),
+      docType: 'role',
+      createdAt: role.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<Role>(payload);
+  }
+
+  async getRoleByScope(scope: string): Promise<Role | undefined> {
+    const docs = await this.findDocs<Role>({ docType: 'role', scope });
+    return docs[0];
+  }
+
+  async listRoles(): Promise<Role[]> {
+    return this.findDocs<Role>({ docType: 'role' });
+  }
+
+  async createOrganization(org: Organization): Promise<Organization> {
+    const now = this.nowIso();
+    const payload = {
+      ...org,
+      _id: org._id || randomUUID(),
+      slug: this.slugify(org.slug || org.name),
+      docType: 'organization',
+      createdAt: org.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<Organization>(payload);
+  }
+
+  async getOrganization(id: string): Promise<Organization | null> {
+    return this.getDoc<Organization>(id);
+  }
+
+  async listOrganizations(): Promise<Organization[]> {
+    return this.findDocs<Organization>({ docType: 'organization' });
+  }
+
+  async upsertUser(user: User): Promise<User> {
+    const now = this.nowIso();
+    const payload = {
+      ...user,
+      _id: user._id || randomUUID(),
+      devices: user.devices ?? [],
+      roleIds: user.roleIds ?? [],
+      docType: 'user',
+      createdAt: user.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<User>(payload);
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    return this.getDoc<User>(id);
+  }
+
+  async listUsersByOrganization(organizationId: string): Promise<User[]> {
+    return this.findDocs<User>({ docType: 'user', organizationId });
+  }
+
+  async savePanelLayout(layout: PanelLayout): Promise<PanelLayout> {
+    const now = this.nowIso();
+    const payload = {
+      ...layout,
+      _id: layout._id || randomUUID(),
+      docType: 'panelLayout',
+      version: layout.version ?? 1,
+      createdAt: layout.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<PanelLayout>(payload);
+  }
+
+  async listPanelLayouts(productionId: number): Promise<PanelLayout[]> {
+    return this.findDocs<PanelLayout>({ docType: 'panelLayout', productionId });
+  }
+
+  async getPanelLayout(id: string): Promise<PanelLayout | null> {
+    return this.getDoc<PanelLayout>(id);
+  }
+
+  async deletePanelLayout(id: string): Promise<boolean> {
+    return this.deleteDoc(id);
+  }
+
+  async saveChannelPreset(preset: ChannelPreset): Promise<ChannelPreset> {
+    const now = this.nowIso();
+    const payload = {
+      ...preset,
+      _id: preset._id || randomUUID(),
+      docType: 'channelPreset',
+      version: preset.version ?? 1,
+      createdAt: preset.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<ChannelPreset>(payload);
+  }
+
+  async listChannelPresets(productionId: number): Promise<ChannelPreset[]> {
+    return this.findDocs<ChannelPreset>({ docType: 'channelPreset', productionId });
+  }
+
+  async getChannelPreset(id: string): Promise<ChannelPreset | null> {
+    return this.getDoc<ChannelPreset>(id);
+  }
+
+  async deleteChannelPreset(id: string): Promise<boolean> {
+    return this.deleteDoc(id);
+  }
+
+  async saveDevice(device: Device): Promise<Device> {
+    const now = this.nowIso();
+    const payload = {
+      ...device,
+      _id: device._id || randomUUID(),
+      docType: 'device',
+      createdAt: device.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<Device>(payload);
+  }
+
+  async getDevice(id: string): Promise<Device | null> {
+    return this.getDoc<Device>(id);
+  }
+
+  async listDevicesByOrganization(organizationId: string): Promise<Device[]> {
+    return this.findDocs<Device>({ docType: 'device', organizationId });
+  }
+
+  async saveAutomationHook(hook: AutomationHook): Promise<AutomationHook> {
+    const now = this.nowIso();
+    const payload = {
+      ...hook,
+      _id: hook._id || randomUUID(),
+      docType: 'automationHook',
+      createdAt: hook.createdAt ?? now,
+      updatedAt: now
+    } as Record<string, unknown>;
+    return this.upsertDoc<AutomationHook>(payload);
+  }
+
+  async listAutomationHooks(productionId: number): Promise<AutomationHook[]> {
+    return this.findDocs<AutomationHook>({
+      docType: 'automationHook',
+      productionId
+    });
+  }
+
+  async deleteAutomationHook(id: string): Promise<boolean> {
+    return this.deleteDoc(id);
   }
 }

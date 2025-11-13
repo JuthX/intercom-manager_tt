@@ -1,12 +1,18 @@
 import { EventEmitter } from 'events';
+import { spawn } from 'child_process';
+import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 
 import {
+  AutomationHook,
+  ChannelPreset,
   NewProduction,
   Production,
   Line,
   SmbEndpointDescription,
   UserResponse,
-  UserSession
+  UserSession,
+  PanelLayout,
+  PanelConfigurationSnapshot
 } from './models';
 import { assert } from './utils';
 import { Log } from './log';
@@ -15,6 +21,21 @@ import { SmbProtocol } from './smb';
 
 const SESSION_INACTIVE_THRESHOLD = 60_000;
 const SESSION_EXPIRED_THRESHOLD = 100_000;
+const DEFAULT_IDLE_TIMEOUT = Number(process.env.ENDPOINT_IDLE_TIMEOUT_S ?? '60');
+
+interface PresetApplyOptions {
+  smb?: SmbProtocol;
+  smbServerUrl?: string;
+  smbServerApiKey?: string;
+  endpointIdleTimeout?: number;
+  allocateEndpoints?: boolean;
+  lineConferenceMap?: Record<string, string>;
+}
+
+interface AutomationEventPayload {
+  type: string;
+  payload: Record<string, unknown>;
+}
 
 // Sessions are changed from active to inactive after a minute, and are marked as expired after ~100 s.
 // Long-term pruning now happens via the Mongo TTL index configured with SESSION_PRUNE_SECONDS in mongodb.ts.
@@ -36,6 +57,8 @@ export class ProductionManager extends EventEmitter {
   private userSessions: Record<string, UserSession>;
   private dbManager: DbManager;
   private whipRetries: Record<string, number> = {};
+  private channelPresetCache = new Map<number, ChannelPreset[]>();
+  private automationHookCache = new Map<number, AutomationHook[]>();
   private static readonly WHIP_EXPIRE_CONSECUTIVE_MISSES = parseInt(
     process.env.WHIP_EXPIRE_CONSECUTIVE_MISSES ?? '3',
     10
@@ -49,6 +72,10 @@ export class ProductionManager extends EventEmitter {
 
   async load(): Promise<void> {
     // empty for now
+  }
+
+  private invalidatePresetCache(productionId: number) {
+    this.channelPresetCache.delete(productionId);
   }
 
   async checkUserStatus(
@@ -496,5 +523,233 @@ export class ProductionManager extends EventEmitter {
     });
 
     return participants;
+  }
+
+  async listPanelLayouts(productionId: number): Promise<PanelLayout[]> {
+    return this.dbManager.listPanelLayouts(productionId);
+  }
+
+  async savePanelLayout(
+    productionId: number,
+    layout: Partial<PanelLayout>
+  ): Promise<PanelLayout> {
+    const now = new Date().toISOString();
+    const payload: PanelLayout = {
+      ...(layout as PanelLayout),
+      _id: layout._id || '',
+      organizationId: layout.organizationId || 'org-default',
+      productionId,
+      name: layout.name || 'Panel Layout',
+      panels: layout.panels || [],
+      version: (layout.version ?? 0) + 1,
+      createdAt: layout.createdAt || now,
+      updatedAt: now,
+      presetId: layout.presetId
+    };
+    const saved = await this.dbManager.savePanelLayout(payload);
+    return saved;
+  }
+
+  async deletePanelLayout(layoutId: string): Promise<boolean> {
+    return this.dbManager.deletePanelLayout(layoutId);
+  }
+
+  async getChannelPresets(productionId: number): Promise<ChannelPreset[]> {
+    if (!this.channelPresetCache.has(productionId)) {
+      const presets = await this.dbManager.listChannelPresets(productionId);
+      this.channelPresetCache.set(productionId, presets);
+    }
+    return this.channelPresetCache.get(productionId) ?? [];
+  }
+
+  async saveChannelPreset(
+    productionId: number,
+    preset: Partial<ChannelPreset>
+  ): Promise<ChannelPreset> {
+    const now = new Date().toISOString();
+    const current = preset._id
+      ? await this.dbManager.getChannelPreset(preset._id)
+      : undefined;
+    const payload: ChannelPreset = {
+      ...(current || {}),
+      ...(preset as ChannelPreset),
+      _id: preset._id || '',
+      productionId,
+      version: current ? current.version + 1 : 1,
+      nodes: preset.nodes || current?.nodes || [],
+      edges: preset.edges || current?.edges || [],
+      priorityRules: preset.priorityRules || current?.priorityRules || [],
+      createdAt: current?.createdAt || now,
+      updatedAt: now
+    };
+    const saved = await this.dbManager.saveChannelPreset(payload);
+    this.invalidatePresetCache(productionId);
+    return saved;
+  }
+
+  async deleteChannelPreset(
+    productionId: number,
+    presetId: string
+  ): Promise<boolean> {
+    const deleted = await this.dbManager.deleteChannelPreset(presetId);
+    if (deleted) {
+      this.invalidatePresetCache(productionId);
+    }
+    return deleted;
+  }
+
+  async applyChannelPreset(
+    productionId: number,
+    presetId: string,
+    options: PresetApplyOptions = {}
+  ): Promise<ChannelPreset> {
+    const preset = await this.dbManager.getChannelPreset(presetId);
+    if (!preset || preset.productionId !== productionId) {
+      throw new Error('Preset not found for production');
+    }
+    const history = [...(preset.history || [])];
+    history.push({ version: preset.version, appliedAt: new Date().toISOString() });
+    const updated: ChannelPreset = { ...preset, history };
+    await this.dbManager.saveChannelPreset(updated);
+    this.invalidatePresetCache(productionId);
+    if (options.allocateEndpoints) {
+      await this.allocatePresetEndpoints(updated, options);
+    }
+    this.emit('preset.applied', { productionId, presetId });
+    return updated;
+  }
+
+  private async allocatePresetEndpoints(
+    preset: ChannelPreset,
+    options: PresetApplyOptions
+  ): Promise<void> {
+    if (!options.smb || !options.smbServerUrl || !options.lineConferenceMap) {
+      return;
+    }
+    const timeout = Number(options.endpointIdleTimeout ?? DEFAULT_IDLE_TIMEOUT);
+    for (const node of preset.nodes) {
+      const targetLine = (node.metadata as any)?.lineId;
+      const conferenceId = targetLine
+        ? options.lineConferenceMap[targetLine]
+        : undefined;
+      if (!conferenceId) continue;
+      try {
+        await options.smb.allocateEndpoint(
+          options.smbServerUrl,
+          conferenceId,
+          node.id,
+          true,
+          true,
+          false,
+          'mixed',
+          timeout,
+          options.smbServerApiKey || ''
+        );
+      } catch (error) {
+        Log().warn('Failed to allocate endpoint for node %s', node.id);
+      }
+    }
+  }
+
+  async exportConfiguration(
+    productionId: number,
+    format: 'json' | 'yaml' = 'json'
+  ): Promise<string> {
+    const snapshot: PanelConfigurationSnapshot = {
+      productionId,
+      channelPresets: await this.dbManager.listChannelPresets(productionId),
+      panelLayouts: await this.dbManager.listPanelLayouts(productionId)
+    };
+    if (format === 'yaml') {
+      return yamlDump(snapshot);
+    }
+    return JSON.stringify(snapshot, null, 2);
+  }
+
+  async importConfiguration(
+    productionId: number,
+    payload: string
+  ): Promise<PanelConfigurationSnapshot> {
+    let parsed: PanelConfigurationSnapshot;
+    try {
+      parsed = JSON.parse(payload);
+    } catch (error) {
+      parsed = yamlLoad(payload) as PanelConfigurationSnapshot;
+    }
+    if (!parsed || parsed.productionId !== productionId) {
+      throw new Error('Invalid configuration payload');
+    }
+    for (const preset of parsed.channelPresets) {
+      await this.dbManager.saveChannelPreset({ ...preset, productionId });
+    }
+    for (const layout of parsed.panelLayouts) {
+      await this.dbManager.savePanelLayout({ ...layout, productionId });
+    }
+    this.invalidatePresetCache(productionId);
+    return parsed;
+  }
+
+  async registerAutomationHook(hook: AutomationHook): Promise<AutomationHook> {
+    const stored = await this.dbManager.saveAutomationHook(hook);
+    const current = this.automationHookCache.get(hook.productionId) || [];
+    this.automationHookCache.set(hook.productionId, [
+      ...current.filter((h) => h._id !== stored._id),
+      stored
+    ]);
+    return stored;
+  }
+
+  async listAutomationHooks(productionId: number): Promise<AutomationHook[]> {
+    if (!this.automationHookCache.has(productionId)) {
+      const hooks = await this.dbManager.listAutomationHooks(productionId);
+      this.automationHookCache.set(productionId, hooks);
+    }
+    return this.automationHookCache.get(productionId) ?? [];
+  }
+
+  async deleteAutomationHook(hookId: string, productionId: number): Promise<boolean> {
+    const deleted = await this.dbManager.deleteAutomationHook(hookId);
+    if (deleted) {
+      this.automationHookCache.delete(productionId);
+    }
+    return deleted;
+  }
+
+  async handleAutomationEvent(
+    productionId: number,
+    event: AutomationEventPayload
+  ): Promise<void> {
+    const hooks = await this.listAutomationHooks(productionId);
+    await Promise.all(hooks.map((hook) => this.executeAutomationHook(hook, event)));
+  }
+
+  private async executeAutomationHook(
+    hook: AutomationHook,
+    event: AutomationEventPayload
+  ): Promise<void> {
+    if (hook.type === 'webhook' && hook.target) {
+      await fetch(hook.target, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(hook.headers || {})
+        },
+        body: JSON.stringify(event)
+      });
+      return;
+    }
+    if (hook.type === 'script' && hook.scriptPath) {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(hook.scriptPath as string, [], {
+          env: { ...process.env, AUTOMATION_EVENT: JSON.stringify(event) },
+          timeout: hook.timeoutMs ?? 10_000
+        });
+        child.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error('Script exited with code ' + code));
+        });
+        child.on('error', reject);
+      });
+    }
   }
 }
