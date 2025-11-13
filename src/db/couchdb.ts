@@ -1,5 +1,12 @@
 import { Log } from '../log';
-import { Ingest, Line, NewIngest, Production, UserSession } from '../models';
+import {
+  Ingest,
+  Line,
+  NewIngest,
+  Production,
+  ProductionMediaPipelineConfig,
+  UserSession
+} from '../models';
 import { assert } from '../utils';
 import { DbManager } from './interface';
 import nano from 'nano';
@@ -126,7 +133,11 @@ export class DbManagerCouchDb implements DbManager {
     return response.ok ? production : undefined;
   }
 
-  async addProduction(name: string, lines: Line[]): Promise<Production> {
+  async addProduction(
+    name: string,
+    lines: Line[],
+    mediaPipelines: ProductionMediaPipelineConfig[] = []
+  ): Promise<Production> {
     await this.connect();
     if (!this.nanoDb) {
       throw new Error('Database not connected');
@@ -136,12 +147,17 @@ export class DbManagerCouchDb implements DbManager {
     if (_id === -1) {
       throw new Error('Failed to get next sequence');
     }
-    const insertProduction = { name, lines, _id: _id.toString() };
+    const insertProduction = {
+      name,
+      lines,
+      mediaPipelines,
+      _id: _id.toString()
+    };
     const response = await this.nanoDb.insert(
       insertProduction as unknown as nano.MaybeDocument
     );
     if (!response.ok) throw new Error('Failed to insert production');
-    return { name, lines, _id } as Production;
+    return { name, lines, mediaPipelines, _id } as Production;
   }
 
   async deleteProduction(productionId: number): Promise<boolean> {

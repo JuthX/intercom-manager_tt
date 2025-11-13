@@ -9,6 +9,7 @@ import { ProductionManager } from './production_manager';
 import { SmbProtocol } from './smb';
 import { getIceServers } from './utils';
 import { DbManager } from './db/interface';
+import { MediaBridgePool } from './media_bridge_pool';
 
 export interface ApiWhepOptions {
   smbServerBaseUrl: string;
@@ -17,6 +18,7 @@ export interface ApiWhepOptions {
   coreFunctions: CoreFunctions;
   productionManager: ProductionManager;
   dbManager: DbManager;
+  mediaBridgePool?: MediaBridgePool;
 }
 
 export const apiWhep: FastifyPluginCallback<ApiWhepOptions> = (
@@ -42,13 +44,16 @@ export const apiWhep: FastifyPluginCallback<ApiWhepOptions> = (
     }
   );
 
-  const smbServerUrl = new URL(
-    '/conferences/',
-    opts.smbServerBaseUrl
-  ).toString();
-
   const smb = new SmbProtocol();
-  const smbServerApiKey = opts.smbServerApiKey || '';
+  const mediaBridgePool = opts.mediaBridgePool;
+  const resolveBridge = (lineId?: string) => {
+    const bridge = mediaBridgePool?.getBridge({ affinityKey: lineId });
+    const baseUrl = bridge?.baseUrl ?? opts.smbServerBaseUrl;
+    return {
+      smbServerUrl: new URL('/conferences/', baseUrl).toString(),
+      smbServerApiKey: bridge?.apiKey ?? opts.smbServerApiKey ?? ''
+    };
+  };
   const coreFunctions = opts.coreFunctions;
 
   fastify.post<{
@@ -105,6 +110,7 @@ export const apiWhep: FastifyPluginCallback<ApiWhepOptions> = (
         const endpointId = uuidv4();
 
         // Create conference and endpoint in SMB
+        const { smbServerUrl, smbServerApiKey } = resolveBridge(lineId);
         const smbConferenceId = await coreFunctions.createConferenceForLine(
           smb,
           smbServerUrl,

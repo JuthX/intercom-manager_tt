@@ -9,6 +9,7 @@ import { ProductionManager } from './production_manager';
 import { SmbProtocol } from './smb';
 import { getIceServers } from './utils';
 import { DbManager } from './db/interface';
+import { MediaBridgePool } from './media_bridge_pool';
 
 export interface ApiWhipOptions {
   smbServerBaseUrl: string;
@@ -18,6 +19,7 @@ export interface ApiWhipOptions {
   productionManager: ProductionManager;
   dbManager: DbManager;
   whipAuthKey?: string;
+  mediaBridgePool?: MediaBridgePool;
 }
 
 export const apiWhip: FastifyPluginCallback<ApiWhipOptions> = (
@@ -43,13 +45,16 @@ export const apiWhip: FastifyPluginCallback<ApiWhipOptions> = (
     }
   );
 
-  const smbServerUrl = new URL(
-    '/conferences/',
-    opts.smbServerBaseUrl
-  ).toString();
-
   const smb = new SmbProtocol();
-  const smbServerApiKey = opts.smbServerApiKey || '';
+  const mediaBridgePool = opts.mediaBridgePool;
+  const resolveBridge = (lineId?: string) => {
+    const bridge = mediaBridgePool?.getBridge({ affinityKey: lineId });
+    const baseUrl = bridge?.baseUrl ?? opts.smbServerBaseUrl;
+    return {
+      smbServerUrl: new URL('/conferences/', baseUrl).toString(),
+      smbServerApiKey: bridge?.apiKey ?? opts.smbServerApiKey ?? ''
+    };
+  };
   const coreFunctions = opts.coreFunctions;
   const whipAuthKey = opts.whipAuthKey?.trim();
 
@@ -126,6 +131,7 @@ export const apiWhip: FastifyPluginCallback<ApiWhipOptions> = (
         }
 
         const sdpOffer = parse(request.body);
+        const { smbServerUrl, smbServerApiKey } = resolveBridge(lineId);
 
         // Create a unique session ID for this WHIP connection
         const sessionId = uuidv4();

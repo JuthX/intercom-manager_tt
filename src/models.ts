@@ -35,6 +35,46 @@ export type IngestListResponse = Static<typeof IngestListResponse>;
 export type PatchIngest = Static<typeof PatchIngest>;
 export type PatchIngestResponse = Static<typeof PatchIngestResponse>;
 
+export const MediaPipelineDestination = Type.Object({
+  provider: Type.Union([
+    Type.Literal('mediaconnect'),
+    Type.Literal('kinesis'),
+    Type.Literal('s3'),
+    Type.Literal('custom')
+  ]),
+  streamArn: Type.Optional(Type.String()),
+  flowArn: Type.Optional(Type.String()),
+  bucket: Type.Optional(Type.String()),
+  endpoint: Type.Optional(Type.String())
+});
+
+export const MediaPipelineTranscription = Type.Object({
+  languageCode: Type.String(),
+  vocabularyName: Type.Optional(Type.String()),
+  outputBucket: Type.Optional(Type.String())
+});
+
+export const MediaPipelineRecording = Type.Object({
+  retentionDays: Type.Number(),
+  audioOnly: Type.Optional(Type.Boolean())
+});
+
+export const MediaPipelineConfig = Type.Object({
+  id: Type.String(),
+  enabled: Type.Boolean(),
+  type: Type.Union([
+    Type.Literal('recording'),
+    Type.Literal('transcription'),
+    Type.Literal('streaming')
+  ]),
+  destination: MediaPipelineDestination,
+  transcription: Type.Optional(MediaPipelineTranscription),
+  recording: Type.Optional(MediaPipelineRecording),
+  tags: Type.Optional(Type.Record(Type.String(), Type.String()))
+});
+
+export type ProductionMediaPipelineConfig = Static<typeof MediaPipelineConfig>;
+
 export const Audio = Type.Object({
   'relay-type': Type.Array(
     Type.Union([
@@ -85,7 +125,8 @@ export const NewProduction = Type.Object({
       name: Type.String(),
       programOutputLine: Type.Optional(Type.Boolean())
     })
-  )
+  ),
+  mediaPipelines: Type.Optional(Type.Array(MediaPipelineConfig))
 });
 
 export const NewProductionLine = Type.Object({
@@ -279,13 +320,15 @@ export const PatchLineResponse = Type.Omit(Line, ['smbConferenceId']);
 export const Production = Type.Object({
   _id: Type.Number(),
   name: Type.String(),
-  lines: Type.Array(Line)
+  lines: Type.Array(Line),
+  mediaPipelines: Type.Optional(Type.Array(MediaPipelineConfig))
 });
 
 export const ProductionResponse = Type.Object({
   name: Type.String(),
   productionId: Type.String(),
-  lines: Type.Optional(Type.Array(LineResponse))
+  lines: Type.Optional(Type.Array(LineResponse)),
+  mediaPipelines: Type.Optional(Type.Array(MediaPipelineConfig))
 });
 
 export const PatchProduction = Type.Omit(Production, ['_id', 'lines']);
@@ -301,7 +344,8 @@ export const ProductionListResponse = Type.Object({
 export const DetailedProductionResponse = Type.Object({
   name: Type.String(),
   productionId: Type.String(),
-  lines: Type.Array(LineResponse)
+  lines: Type.Array(LineResponse),
+  mediaPipelines: Type.Optional(Type.Array(MediaPipelineConfig))
 });
 
 export const NewSession = Type.Object({

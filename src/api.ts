@@ -14,7 +14,10 @@ import apiWhip, { ApiWhipOptions } from './api_whip';
 import apiWhep, { ApiWhepOptions } from './api_whep';
 import { DbManager } from './db/interface';
 import { IngestManager } from './ingest_manager';
+import { MediaBridgePool } from './media_bridge_pool';
+import { QoSTelemetryCollector } from './metrics/qos';
 import { ProductionManager } from './production_manager';
+import { SipGateway } from './sip_gateway';
 
 const HelloWorld = Type.String({
   description: 'The magical words!'
@@ -55,6 +58,9 @@ export interface ApiGeneralOptions {
   dbManager: DbManager;
   productionManager: ProductionManager;
   ingestManager: IngestManager;
+  mediaBridgePool?: MediaBridgePool;
+  telemetryCollector?: QoSTelemetryCollector;
+  sipGateway?: SipGateway;
 }
 
 export type ApiOptions = ApiGeneralOptions &
@@ -104,7 +110,8 @@ export default async (opts: ApiOptions) => {
     smbServerApiKey: opts.smbServerApiKey,
     dbManager: opts.dbManager,
     productionManager: opts.productionManager,
-    coreFunctions: opts.coreFunctions
+    coreFunctions: opts.coreFunctions,
+    mediaBridgePool: opts.mediaBridgePool
   });
   api.register(apiWhip, {
     prefix: 'api/v1',
@@ -114,7 +121,8 @@ export default async (opts: ApiOptions) => {
     coreFunctions: opts.coreFunctions,
     productionManager: opts.productionManager,
     dbManager: opts.dbManager,
-    whipAuthKey: opts.whipAuthKey
+    whipAuthKey: opts.whipAuthKey,
+    mediaBridgePool: opts.mediaBridgePool
   });
   api.register(apiWhep, {
     prefix: 'api/v1',
@@ -123,7 +131,8 @@ export default async (opts: ApiOptions) => {
     smbServerBaseUrl: opts.smbServerBaseUrl,
     coreFunctions: opts.coreFunctions,
     productionManager: opts.productionManager,
-    dbManager: opts.dbManager
+    dbManager: opts.dbManager,
+    mediaBridgePool: opts.mediaBridgePool
   });
   api.register(apiShare, { publicHost: opts.publicHost, prefix: 'api/v1' });
   api.register(apiReAuth, { prefix: 'api/v1' });

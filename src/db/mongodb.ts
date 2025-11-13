@@ -1,6 +1,13 @@
 import '../config/load-env';
 import { MongoClient } from 'mongodb';
-import { Ingest, Line, NewIngest, Production, UserSession } from '../models';
+import {
+  Ingest,
+  Line,
+  NewIngest,
+  Production,
+  ProductionMediaPipelineConfig,
+  UserSession
+} from '../models';
 import { assert } from '../utils';
 import { DbManager } from './interface';
 import { Log } from '../log';
@@ -131,10 +138,14 @@ export class DbManagerMongoDb implements DbManager {
     return result.modifiedCount === 1 ? production : undefined;
   }
 
-  async addProduction(name: string, lines: Line[]): Promise<Production> {
+  async addProduction(
+    name: string,
+    lines: Line[],
+    mediaPipelines: ProductionMediaPipelineConfig[] = []
+  ): Promise<Production> {
     const db = this.client.db();
     const _id = await this.getNextSequence('productions');
-    const production = { name, lines, _id };
+    const production = { name, lines, mediaPipelines, _id };
     await db.collection('productions').insertOne(production as any);
     return production;
   }
