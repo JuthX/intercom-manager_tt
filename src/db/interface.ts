@@ -1,4 +1,11 @@
-import { Ingest, Line, NewIngest, Production, UserSession } from '../models';
+import {
+  Ingest,
+  Line,
+  NewIngest,
+  Production,
+  ProductionMediaPipelineConfig,
+  UserSession
+} from '../models';
 
 export interface DbManager {
   connect(): Promise<void>;
@@ -7,7 +14,11 @@ export interface DbManager {
   getProductions(limit: number, offset: number): Promise<Production[]>;
   getProductionsLength(): Promise<number>;
   updateProduction(production: Production): Promise<Production | undefined>;
-  addProduction(name: string, lines: Line[]): Promise<Production>;
+  addProduction(
+    name: string,
+    lines: Line[],
+    mediaPipelines?: ProductionMediaPipelineConfig[]
+  ): Promise<Production>;
   deleteProduction(productionId: number): Promise<boolean>;
   setLineConferenceId(
     productionId: number,

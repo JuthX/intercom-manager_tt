@@ -249,7 +249,11 @@ export class ProductionManager extends EventEmitter {
       newProductionLines.push(newProductionLine);
     }
 
-    return this.dbManager.addProduction(newProduction.name, newProductionLines);
+    return this.dbManager.addProduction(
+      newProduction.name,
+      newProductionLines,
+      newProduction.mediaPipelines || []
+    );
   }
 
   async updateProduction(

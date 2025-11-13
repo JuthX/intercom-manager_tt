@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { CoreFunctions } from './api_productions_core_functions';
 import { DbManager } from './db/interface';
 import { Log } from './log';
+import { MediaBridgePool } from './media_bridge_pool';
 import {
   DetailedProductionResponse,
   ErrorResponse,
@@ -34,6 +35,7 @@ export interface ApiProductionsOptions {
   dbManager: DbManager;
   productionManager: ProductionManager;
   coreFunctions: CoreFunctions;
+  mediaBridgePool?: MediaBridgePool;
 }
 
 function toUserResponse(doc: any) {
@@ -68,19 +70,27 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
   opts,
   next
 ) => {
-  const smbServerUrl = new URL(
-    '/conferences/',
-    opts.smbServerBaseUrl
-  ).toString();
   const smb = new SmbProtocol();
-  const smbServerApiKey = opts.smbServerApiKey || '';
+  const mediaBridgePool = opts.mediaBridgePool;
+
+  const resolveBridge = (affinityKey?: string) => {
+    const bridge = mediaBridgePool?.getBridge({ affinityKey });
+    const baseUrl = bridge?.baseUrl ?? opts.smbServerBaseUrl;
+    return {
+      smbServerUrl: new URL('/conferences/', baseUrl).toString(),
+      smbServerApiKey: bridge?.apiKey ?? opts.smbServerApiKey ?? ''
+    };
+  };
 
   const productionManager = opts.productionManager;
   const coreFunctions = opts.coreFunctions;
   const dbManager = opts.dbManager;
 
   setInterval(
-    () => productionManager.checkUserStatus(smb, smbServerUrl, smbServerApiKey),
+    () => {
+      const { smbServerUrl, smbServerApiKey } = resolveBridge();
+      return productionManager.checkUserStatus(smb, smbServerUrl, smbServerApiKey);
+    },
     2_000
   );
 
@@ -638,6 +648,7 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
       try {
         const { lineId, productionId, username } = request.body;
         const sessionId: string = uuidv4();
+        const { smbServerUrl, smbServerApiKey } = resolveBridge(lineId);
 
         const smbConferenceId = await coreFunctions.createConferenceForLine(
           smb,
@@ -765,6 +776,7 @@ const apiProductions: FastifyPluginCallback<ApiProductionsOptions> = (
           production.lines,
           userSession.lineId
         );
+        const { smbServerUrl, smbServerApiKey } = resolveBridge(line.id);
 
         const connectionEndpointDescription:
           | SmbEndpointDescription
